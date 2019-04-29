@@ -1,4 +1,4 @@
-function varargout = HBEMT(Vf,omega,R,Nb,CL,CD,theta,C)
+function varargout = HBEMT(Vf,omega,R,Nb,CL,CD,theta,C,varargin)
 % Hybrid Blade Element Momentum Theory for computing thrust in
 % forward flight.
 % reference: 
@@ -15,29 +15,73 @@ function varargout = HBEMT(Vf,omega,R,Nb,CL,CD,theta,C)
 %        C      function w.r.t to span ratio r      [rad]
 % freestream air velcoty vector (Vf)
 
+p = inputParser;
+
+% radial position [m]
+p.addParameter('r0'   ,2/100       ,@isscalar);
+p.addParameter('rf'   ,14/100      ,@isscalar);
+% blade azimuth in rotor-wind axis (V axis - H axis plane along Vxy-fig.5) [rad]
+p.addParameter('psi0' ,0           ,@isscalar);
+p.addParameter('psif' ,2*pi        ,@isscalar);
+% Integration Mode [-]
+p.addParameter('integrationmode',3 ,@isscalar);
+% Number of places to evaluate integral (radial and azimuth axis) [-]
+p.addParameter('Nr'  ,-1           ,@isscalar);
+p.addParameter('Naz' ,-1           ,@isscalar);
+
+p.parse(varargin{:});
+
+r0              = p.Results.r0/R; % radial position as ratio of total radius (R)[-]
+rf              = p.Results.rf/R; % radial position as ratio of total radius (R)[-]
+psi0            = p.Results.psi0;
+psif            = p.Results.psif;
+integrationmode = p.Results.integrationmode;
+Nr              = p.Results.Nr;
+Naz             = p.Results.Naz;
+
+switch integrationmode
+    case {1,2}
+    % for simpson/trapozoidal integration
+        if Naz < 0
+            Naz = 360;
+        end
+        if Nr < 0
+            Nr = 10;
+        end
+        r = linspace(r0,rf,Nr);             % radial position as ratio of total radius (R)[-]
+        
+        if (2*pi - (psif - psi0)) <= eps('single')
+            psi0 = psi0 + abs(psif - psi0)/Naz;
+        end
+        
+        psi = linspace(psi0,psif,Naz); % blade azimuth in rotor-wind axis i.e. V axis along Vxy  - fig 5
+    case 3
+    % gauss legendre integration
+        if Naz < 0
+            Naz = 10;
+        end
+        if Nr < 0
+            Nr = 6;
+        end
+    
+        [r,rc]=lgwt(Nr,r0,rf);
+        r= r';
+        Nr  = length(r);
+        
+        psif = 2*pi;
+        psi0  = 0;
+        [psi,psic]=lgwt(Naz,psi0,psif);
+        psi = psi';
+        Naz = length(psi);
+end
 
 Vxy = sqrt(sum(Vf(1:2).^2));
 Vz = Vf(3);
-if Vxy == 0 
-    Naz = 1;
-else
-    Naz = 5;
-end
-Nr = 7;
-
-
-r = linspace(2/14,1,Nr);            % radial position as ratio of total radius (R)[-]
-psi = linspace(0,2*pi,Naz);      % blade azimuth in rotor-wind axis i.e. V axis along Vxy 
-
-
-
 
 lambdac = Vz/(omega*R);
 mu = Vxy/(omega*R);
 
 sigmaPrime = Nb/(pi*R);    % multiply by chord for solidity variation
-
-
 
 szTmp = [Nr,Naz];
 lambdai = zeros(szTmp);
@@ -57,33 +101,10 @@ for i = 1:Nr
         aux =@(lambdai)HBEMTaux(lambdai,r(i),psi(j),lambdac,mu,sigmaPrime,CL,...
                                 CD,theta,C);
                             
-%         g = 0.1;
-%         while true
-%             lambdai(i,j) = fzero(aux,g);
-%             if ~isnan(lambdai(i,j)) && ~isinf(lambdai(i,j))
-%                 break;
-%             end
-%             
-%             fprintf(1,['At psi %f and r %f\n',...
-%                        'try again. lambdai %f guess %f\n\n\n'],...
-%                     psi(j)*180/pi,r(i),lambdai(i,j),g);
-%             
-%             if lambdai(i,j) < 0
-%                 g = g*1.1;
-%             else
-%                 g = g*0.5;
-%             end
-% 
-%             if g < 0.0063
-%                 error('could not find lambdai');
-%             end
-%             
-% 
-%             
-%         end
-        lambdai(i,j) = brentDekker(aux,0.01,.2);
-        [CTdrdp(i,j),CHdrdp(i,j),CVdrdp(i,j),...
-         CMTdrdp(i,j),CMHdrdp(i,j),CMVdrdp(i,j),...
+
+        lambdai(i,j) = brentDekker(aux,0.01,1.0);
+        [CTdrdp(i,j),CVdrdp(i,j),CHdrdp(i,j),...
+         CMTdrdp(i,j),CMVdrdp(i,j),CMHdrdp(i,j),...
          phidrdp(i,j),vrdrdp(i,j)] ...
             = bladeElementForcesAndMoments(lambdai(i,j),r(i),psi(j),...
                 lambdac,mu,sigmaPrime,CL,CD,theta,C);
@@ -92,26 +113,38 @@ end
 
 
 vidrdp = lambdai*omega*R;
-if isscalar(psi)
-    vi = psi*trapz(r,vidrdp);
-    
-    CFM = [psi*trapz(r,CTdrdp);
-           psi*trapz(r,CVdrdp);
-           psi*trapz(r,CHdrdp);
-           psi*trapz(r,CMTdrdp);
-           psi*trapz(r,CMVdrdp);
-           psi*trapz(r,CMHdrdp)];
-else
-    vi = trapz(psi,trapz(r,vidrdp));
-    
-    CFM = [trapz(psi,trapz(r,CTdrdp));
-           trapz(psi,trapz(r,CVdrdp));
-           trapz(psi,trapz(r,CHdrdp));
-           trapz(psi,trapz(r,CMTdrdp));
-           trapz(psi,trapz(r,CMVdrdp));
-           trapz(psi,trapz(r,CMHdrdp))];
-    
+
+switch integrationmode
+    case 1
+        % trapazoidal intergatrion
+        vi =   trapz(psi,trapz(r,vidrdp));
+        CFM = [trapz(psi,trapz(r,CTdrdp));
+               trapz(psi,trapz(r,CVdrdp));
+               trapz(psi,trapz(r,CHdrdp));
+               trapz(psi,trapz(r,CMTdrdp));
+               trapz(psi,trapz(r,CMVdrdp));
+               trapz(psi,trapz(r,CMHdrdp))];
+    case 2
+        % simpson intergatrion
+        dpsi = diff(psi(1:2));
+        dr = diff(r(1:2));
+        vi =   simpson(dpsi,simpson(dr,vidrdp));
+        CFM = [simpson(dpsi,simpson(dr,CTdrdp));
+               simpson(dpsi,simpson(dr,CVdrdp));
+               simpson(dpsi,simpson(dr,CHdrdp));
+               simpson(dpsi,simpson(dr,CMTdrdp));
+               simpson(dpsi,simpson(dr,CMVdrdp));
+               simpson(dpsi,simpson(dr,CMHdrdp))];
+    case 3
+        vi =   gaussLegendre(psic,gaussLegendre(rc,vidrdp));
+        CFM = [gaussLegendre(psic,gaussLegendre(rc,CTdrdp));
+               gaussLegendre(psic,gaussLegendre(rc,CVdrdp));
+               gaussLegendre(psic,gaussLegendre(rc,CHdrdp));
+               gaussLegendre(psic,gaussLegendre(rc,CMTdrdp));
+               gaussLegendre(psic,gaussLegendre(rc,CMVdrdp));
+               gaussLegendre(psic,gaussLegendre(rc,CMHdrdp))];
 end
+
 
 varargout = {CFM,vi,vidrdp};
 
@@ -132,6 +165,8 @@ if nargout > 6
 end
 
 end
+
+
 
 function res = HBEMTaux(lambdai,r,psi,lambdac,mu,sigmaPrime,CL,CD,theta,C)
 
@@ -163,13 +198,20 @@ alpha = theta(r)-phi;
 vr2= (r+lambdaxyc)^2+v^2;
 
 tmp = (1/(2*pi))*(1/2)*sigma*vr2;
-      
+
+
+% rotor disk axis 
+% X axis along rotor shaft
+% Y axis is in direction of wind in plane of rotor disk 
+% Z axis is lateral to wind in plane of rotor disk 
 varargout{1} = tmp*(CL(alpha)*cos(phi)-CD(alpha)*sin(phi));            % [CT  dr dpsi]    elemental coefficient of thrust
 varargout{2} = tmp*(CL(alpha)*sin(phi)+CD(alpha)*cos(phi))*cos(psi);   % [CV  dr dpsi]    elemental coefficient of with free stream force
 varargout{3} = tmp*(CL(alpha)*sin(phi)+CD(alpha)*cos(phi))*sin(psi);   % [CH  dr dpsi]    elemental coefficient of lateral to free stream force
+
 varargout{4} = tmp*(CL(alpha)*sin(phi)+CD(alpha)*cos(phi))*r;          % [CMT dr dpsi]    elemental coefficient of yaw moment
 varargout{5} = tmp*(CL(alpha)*cos(phi)-CD(alpha)*sin(phi))*r*cos(psi); % [CMV dr dpsi]    elemental coefficient of with free stream moment
 varargout{6} = tmp*(CL(alpha)*cos(phi)-CD(alpha)*sin(phi))*r*sin(psi); % [CMH dr dpsi]    elemental coefficient of lateral to free stream moment
+
 
 if nargout > 6
     varargout{7} = phi;
@@ -177,6 +219,40 @@ end
 
 if nargout > 7
     varargout{8} = sqrt(vr2);
+end
+
+
+end
+
+
+function I = simpson(h,y)
+[n,m] = size(y);
+if n>1 && m>1
+    % for matrix inegrate along column and return row vector of intgrated
+    % values
+    I = h/3*(y(1,:)+2*sum(y(3:2:end-2,:))+4*sum(y(2:2:end,:))+y(end,:)); 
+else
+    I = h/3*(y(1)+2*sum(y(3:2:end-2))+4*sum(y(2:2:end))+y(end));
+end
+end
+
+
+function I = gaussLegendre(c,y)
+[n,m] = size(y);
+I = zeros(1,m);
+
+c = c(:);% ensure c is a column vector
+
+gl = @(f)(sum(c.*f));
+if n>1 && m>1
+    % for matrix inegrate along column and return row vector of intgrated
+    % values
+    for i = 1:m
+        I(i) = gl(y(:,i));
+    end
+else
+    y = y(:);% ensure y is a column vector
+    I = gl(y);
 end
 
 
@@ -290,64 +366,3 @@ x = sb;
 return
 end
 
-% function x = rootFind(fun,x0)
-% 
-% x = x0;
-% fx = fun(x);
-% tol = ones(size(fx))*1e-10;
-% 
-% while any(abs(fx) > tol)
-%     dx = eps('single')*2;
-%     Del_f = finDiff(fun,x,dx);
-%     x = x-fx/Del_f;
-%     fx = fun(x);
-% end
-% 
-% 
-% end
-% 
-% function Del_f = finDiff(f,X,DX)
-% % Fintie Difference
-% % This function computes the numerical derivative of a function f(x) using 
-% % the Finite Difference method
-% % If X is a vector then this computes the numerical gradiant of f(x).
-% %       Del_f = [df/dx1 df/dx2 ... df/dxn]
-% % if f(x) is a system of equations this computes the numerical Jacobian of
-% % the system
-% %      J = [df1/dx1 df1/dx2 ... df1/dxn] 
-% %           df2/dx1 df2/dx2 ... df2/dxn
-% %           ...                     ...
-% %           dfm/dx1 dfm/dx2 ... dfm/dxn
-% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-% 
-% if ~isvector(X)
-%    error('X should be vector');
-% end
-% 
-% N = numel(X);
-% 
-% if nargin < 3
-%     DX = 2*sqrt(eps)*ones(size(X));
-% elseif numel(DX) == 1
-%     DX = DX*ones(size(X));
-% elseif ~isvector(DX) && numel(DX) ~= N
-%     error('the optional argument delX must be a scalar or vector of the same dimension of X');
-% end
-% 
-% 
-% f0 = f(X);
-% if ~isvector(f0) || ~isscalar(f0)
-%    error('f(x) should be a scalar or vector');
-% end
-% 
-% M = numel(f0);
-% Del_f = zeros(M,N);
-% 
-% Xp = X;
-% for i = 1:N
-%     Xp(i) = Xp(i)+DX(i);
-%     Del_f(i) = ( f(Xp) - f0 )/DX(i);
-%     Xp(i) = Xp(i)-DX(i);
-% end
-% 
-% end
